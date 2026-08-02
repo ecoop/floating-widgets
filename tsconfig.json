@@ -1,0 +1,33 @@
+{
+  /* Mirrors Pitchcraft web/tsconfig.app.json strictness so the three lifted
+     infra files typecheck identically to their origin. Differences from that
+     file are only the ones that matter for a *library* rather than a Vite app:
+       - no "types": ["vite/client"]   (not a Vite app)
+       - no path aliases               (all imports are relative within src/)
+       - no allowImportingTsExtensions (published code imports no .ts suffixes)
+     tsup emits the .d.ts bundle at build time; tsc here is typecheck-only
+     (noEmit), which is what `npm run typecheck` invokes. */
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+
+    /* Type-only import discipline (the lifted code already complies). */
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "erasableSyntaxOnly": true,
+
+    /* Typecheck-only; tsup produces the actual JS + declarations. */
+    "noEmit": true,
+
+    /* Strictness — identical to the source project. */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"]
+}
