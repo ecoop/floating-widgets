@@ -1,5 +1,5 @@
 {
-  "name": "@ecoop/floating-widgets",
+  "name": "@cooperic/floating-widgets",
   "version": "0.1.0",
   "description": "Draggable, snappable corner-docked panel stack (\"floating widgets\") for React 19 + shadcn/Tailwind.",
   "license": "MIT",

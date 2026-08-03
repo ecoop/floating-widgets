@@ -1,6 +1,6 @@
 <!-- Copyright (c) 2026 Eric Cooper. Licensed under the MIT License; see LICENSE. -->
 
-# @ecoop/floating-widgets
+# @cooperic/floating-widgets
 
 A draggable, snappable stack of corner-docked panels — **"floating widgets"** —
 for React 19. Extracted from Pitchcraft's sidebar HUD (Usage / Diagnostics /
@@ -84,7 +84,7 @@ import {
   FloatingWidgetStack,
   type FloatingWidgetStackHandle,
   type WidgetDef,
-} from "@ecoop/floating-widgets";
+} from "@cooperic/floating-widgets";
 
 // 1. Your app's "context" — the bundle of already-computed live state the
 //    widgets read. A plain object (view-model), NOT a place to call hooks.
