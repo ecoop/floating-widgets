@@ -2,7 +2,7 @@
 
 # @nobadeer/floating-widgets
 
-_Last updated: 2026-08-16_
+_Last updated: 2026-08-17_
 
 A draggable, snappable stack of corner-docked panels — **"floating widgets"** —
 for React 19, which presents as a single docked surface on narrow viewports.
@@ -391,24 +391,63 @@ only if you're building a layout other than the stack.
 
 ## Upgrading from 0.1.0
 
-Additive — the defaults reproduce 0.1.0's behavior and visual output. Two things
-to know:
+Narrower than the version bump suggests. **No export was removed** — 0.2.0 is
+purely additive at the module level — and the **localStorage format is
+unchanged** (same `widget:<id>` key, same `{ position, collapsed, mode }`
+shape), so saved layouts survive untouched. `dockBelow` defaults to `false` and
+the default class strings are the 0.1.0 ones, so an upgrade that changes nothing
+else looks and behaves as before.
 
-- **Markup gained attributes.** Every element now carries `data-fw-part` (plus
-  `data-state`, `data-presentation`, `data-mode`). Classes are unchanged. Only
-  a test asserting on exact DOM attributes would notice.
-- **`settingsOpen` / `settingsPanelWidth` are replaced by `avoidRects`** — the
-  one genuinely breaking change, and a compile error rather than a silent one.
-  Instead of a boolean plus a hardcoded panel width, pass the region to avoid;
-  `useAvoidRects([sheetRef])` measures it from the live element, so the widths
-  can't drift apart. See [above](#staying-out-of-the-way--avoidrects).
+### The one breaking change
+
+**`settingsOpen` / `settingsPanelWidth` → `avoidRects`**, on both
+`FloatingWidgetStack` and `FloatingWidget`. A compile error, so TypeScript finds
+every call site for you. Instead of a boolean plus a hardcoded panel width, pass
+the region to avoid — `useAvoidRects([sheetRef])` measures it from the live
+element, so the avoided region can't drift away from the real panel. See
+[above](#staying-out-of-the-way--avoidrects) for both migration forms.
+
+### Silent changes — the ones actually worth reading
+
+None of these will fail to compile, so they're the ones that cost debugging time
+if you hit them without knowing.
+
+- **The grip's `touch-none` class is gone**, replaced by inline
+  `touch-action: none` (plus `user-select: none`). They are drag correctness
+  rather than skin, and had to move somewhere `unstyled` can't delete them. If
+  any of your CSS or tests select the grip by that class name, they now miss.
+- **Bring-to-front moved from `onMouseDown` to `onPointerDown`**, so a touch can
+  raise a widget without dragging it. A test that fires `mouseDown` to assert
+  z-order will silently stop exercising anything — switch it to `pointerDown`.
+- **A floating widget may now escape a rect vertically.** 0.1.0's Settings shift
+  was x-only for every widget; `avoidRects` is x-only for *snapped* widgets (the
+  coordinator owns their y) but both axes for floating ones. For a full-height
+  sheet the result is identical, since a vertical escape would have to leave the
+  viewport. If your sheet is *not* full height, a floating widget that used to
+  slide sideways may now slide up.
+- **The chevron gained `aria-expanded` / `aria-controls`**, and the body gained
+  an `id` to match. Additive, but it changes the accessibility tree — update any
+  a11y assertions that enumerated it.
+- **Markup gained attributes.** Every element now carries `data-fw-part`, plus
+  `data-state`, `data-presentation`, `data-mode` and `data-fw-id`. Classes are
+  unchanged. Expect churn in DOM snapshot tests.
 - **A stored position is no longer rewritten to fit the viewport.** Through
   0.1.0 a resize clamped each floating widget's position *and saved the clamp*,
   so merely opening the page narrow permanently moved a widget: one stored at
   x=900 became x≈100 and stayed stranded when the window widened again.
   Clamping now happens where the position is read, so the stored value stays the
-  user's intent. If you were relying on the old behavior to rescue off-screen
-  widgets, `resetAll()` is the deliberate version of that.
+  user's intent and the widget is still drawn on-screen. If you were relying on
+  the old behavior to rescue off-screen widgets, `resetAll()` is the deliberate
+  version of that.
+
+### Version pinning
+
+`0.2.0` rather than `0.1.1` is deliberate. Under semver's 0.x rules a caret
+range allows patch bumps only — `^0.1.0` means `>=0.1.0 <0.2.0` — so a
+caret-pinned consumer will **not** cross this break on a reinstall, and can stay
+on 0.1.0 as long as it likes. Only `>=`, `*` or `latest` ranges would drift.
+Consuming the package by `file:` path, workspace link or git ref bypasses this
+entirely.
 
 ---
 
