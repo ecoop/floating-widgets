@@ -24,7 +24,7 @@
  *     <header ref={pageHeaderRef}>…</header>
  *     …page…
  *     <FloatingWidgetStack ref={stackRef} ctx={ctx} widgets={WIDGETS}
- *                          settingsOpen={settingsOpen} />
+ *                          avoidRects={avoidRects} />
  *   </LayoutProvider>
  *
  * The stack deliberately does NOT render its own LayoutProvider: the provider
@@ -70,6 +70,7 @@ import { createPortal } from "react-dom";
 
 import { FloatingWidget, type FloatingWidgetHandle } from "./FloatingWidget";
 import { useDock } from "./LayoutContext";
+import type { AvoidRect } from "./avoid";
 import { partProps, type PartClassNames, type PartStyling } from "./parts";
 import type { WidgetDef } from "./types";
 
@@ -134,10 +135,14 @@ export interface FloatingWidgetStackProps<Ctx> {
    * A plain object (view-model), NOT a place to call hooks.
    */
   ctx: Ctx;
-  /** Forwarded to each widget for the Settings-sheet minimal-shift (Pitchcraft #270). */
-  settingsOpen?: boolean;
-  /** Width (px) of the Settings sheet; forwarded unchanged. Default lives in FloatingWidget. */
-  settingsPanelWidth?: number;
+  /**
+   * Regions every widget should stay clear of, in viewport coordinates — a
+   * side sheet, the software keyboard, a toast stack. Each widget slides by
+   * only as much as it needs, as a transform, so stored positions are
+   * untouched. `useAvoidRects([sheetRef])` measures live elements for you.
+   * Ignored while docked.
+   */
+  avoidRects?: readonly AvoidRect[];
   /**
    * Optional localStorage namespace, prefixed to each widget id, so two apps
    * sharing an origin don't collide on `widget:<id>` keys. Omit for the
@@ -178,8 +183,7 @@ export interface FloatingWidgetStackProps<Ctx> {
 export function FloatingWidgetStack<Ctx>({
   widgets,
   ctx,
-  settingsOpen = false,
-  settingsPanelWidth,
+  avoidRects,
   storagePrefix,
   classNames,
   unstyled,
@@ -314,8 +318,7 @@ export function FloatingWidgetStack<Ctx>({
               order={i}
               header={w.header(ctx)}
               defaultCollapsed={w.defaultCollapsed ?? false}
-              settingsOpen={settingsOpen}
-              settingsPanelWidth={settingsPanelWidth}
+              avoidRects={avoidRects}
               classNames={classNames}
               widgetClassNames={w.classNames}
               unstyled={unstyled}

@@ -74,6 +74,7 @@ import {
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
 
+import { avoidOffset, type AvoidRect } from "./avoid";
 import { useDock, useLayout } from "./LayoutContext";
 import { partProps, type PartClassNames, type PartStyling } from "./parts";
 import {
@@ -140,22 +141,17 @@ type FloatingWidgetProps = {
    *  Snapped widgets ignore this (the coordinator derives top). Default 64. */
   defaultFloatY?: number;
   /**
-   * Whether the Settings sheet is open (#270). When true the widget slides
-   * left by *only* as much as needed to clear the panel (see settingsPanelWidth);
-   * a widget already clear of the panel doesn't move. The shift is a CSS
-   * transform (x-only), so the stored left/top are untouched and closing the
-   * sheet springs the widget back to exactly where it was — unless the user
-   * dragged it while shifted, in which case it stays put. Default false.
-   * Float presentation only — a docked widget has nothing to get out of the
-   * way of.
+   * Regions to keep clear — a side sheet, the software keyboard, a toast
+   * stack. The widget slides by *only* as much as needed to escape them; one
+   * already clear doesn't move. The shift is a CSS transform, so the stored
+   * left/top are untouched and removing the rect springs the widget back to
+   * exactly where it was — unless the user dragged it while shifted, in which
+   * case it stays put.
+   *
+   * Snapped widgets move on x only (the coordinator owns their y). Float
+   * presentation only: a docked widget has nothing to get out of the way of.
    */
-  settingsOpen?: boolean;
-  /**
-   * Width (px) of the Settings sheet, used to compute the panel's left edge
-   * (innerWidth − settingsPanelWidth) and hence each widget's minimal shift.
-   * Default 448 (28rem, shadcn `sm:max-w-md`).
-   */
-  settingsPanelWidth?: number;
+  avoidRects?: readonly AvoidRect[];
   /** Stack-level class overrides, keyed by `data-fw-part`. */
   classNames?: PartClassNames;
   /** Per-widget class overrides, applied after the stack-level ones. */
@@ -172,8 +168,7 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     children,
     defaultCollapsed = false,
     defaultFloatY = 64,
-    settingsOpen = false,
-    settingsPanelWidth = 448,
+    avoidRects,
     classNames,
     widgetClassNames,
     unstyled,
@@ -263,16 +258,19 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
       forceTick();
     }, []);
 
-    // ── Settings-aware minimal X-shift (#270) ────────────────────────────────
-    // When the Settings sheet opens, slide this widget left by *only* as much
-    // as needed to clear the panel — a widget already left of the panel edge
-    // computes 0 and doesn't move. The shift is a CSS transform (x-only), so
-    // stored left/top are untouched and closing the sheet springs the widget
-    // back. `shiftRef` mirrors the state for the pointer handlers (which close
-    // over stale state otherwise).
-    const [shift, setShift] = useState(0);
-    const shiftRef = useRef(0);
-    function applyShift(v: number) {
+    // ── Minimal shift out of the way of `avoidRects` (was #270) ──────────────
+    // Slide this widget by *only* as much as needed to escape the rects — one
+    // already clear computes {0,0} and doesn't move. The shift is a CSS
+    // transform, so stored left/top are untouched and removing the rect springs
+    // the widget back. `shiftRef` mirrors the state for the pointer handlers
+    // (which close over stale state otherwise).
+    const ZERO_SHIFT = { x: 0, y: 0 };
+    const [shift, setShift] = useState<{ x: number; y: number }>(ZERO_SHIFT);
+    const shiftRef = useRef<{ x: number; y: number }>(ZERO_SHIFT);
+    function applyShift(v: { x: number; y: number }) {
+      // Bail when unchanged: the effect below runs on every avoidRects change,
+      // and an unconditional setState there would re-render → re-run → loop.
+      if (shiftRef.current.x === v.x && shiftRef.current.y === v.y) return;
       shiftRef.current = v;
       setShift(v);
     }
@@ -286,30 +284,43 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     function currentTop(): number {
       return snapped ? topFor(id) : clampPosition(state.position, measuredWidth()).y;
     }
+    // Depend on the rects' VALUES, not the array's identity. A consumer passing
+    // an inline `[{...}]` would otherwise give this effect a new dep every
+    // render; combined with the setState it does, that is an infinite loop.
+    // Serializing makes the hook correct regardless of caller memoization.
+    const avoidKey = (avoidRects ?? [])
+      .map((r) => `${r.left},${r.top},${r.right},${r.bottom}`)
+      .join("|");
+
     useEffect(() => {
-      // A docked widget has no sheet to dodge and no inline position to shift.
-      if (isDock) {
-        applyShift(0);
+      // A docked widget has nothing to dodge and no inline position to shift.
+      if (isDock || !avoidRects || avoidRects.length === 0) {
+        // Spring back — a no-op if a mid-shift drag already committed
+        // (onGripPointerDown bakes the shift into left/top and clears it).
+        applyShift(ZERO_SHIFT);
         return;
       }
-      if (settingsOpen) {
-        const el = nodeRef.current;
-        const w = el?.offsetWidth ?? WIDGET_W;
-        const left = el ? parseFloat(el.style.left) || currentLeft() : currentLeft();
-        const panelLeft = window.innerWidth - settingsPanelWidth;
-        const gap = 16;
-        const overlap = left + w + gap - panelLeft;
-        applyShift(overlap > 0 ? -overlap : 0);
-      } else {
-        // Spring back to 0 — a no-op if a mid-open drag already committed
-        // (onGripPointerDown bakes the shift into `left` and clears it).
-        applyShift(0);
-      }
-      // Recompute only on open/close (or panel resize, or a presentation
-      // change); a drag while open commits via onGripPointerDown rather than
+      const el = nodeRef.current;
+      const width = el?.offsetWidth || WIDGET_W;
+      const height = el?.offsetHeight || 0;
+      // Read from the DOM where available so the baseline is where the widget
+      // actually is, not where a mid-animation state says it should be.
+      const left = el ? parseFloat(el.style.left) || currentLeft() : currentLeft();
+      const top = el ? parseFloat(el.style.top) || currentTop() : currentTop();
+      applyShift(
+        avoidOffset(
+          { left, top, width, height },
+          avoidRects,
+          // The coordinator owns y for snapped widgets — moving one vertically
+          // would slide it into siblings that don't know to reflow.
+          snapped ? "x" : "xy",
+          { width: window.innerWidth, height: window.innerHeight },
+        ),
+      );
+      // A drag while shifted commits via onGripPointerDown rather than by
       // re-running this effect.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [settingsOpen, settingsPanelWidth, isDock]);
+    }, [avoidKey, isDock, snapped]);
 
     // Expose reset() + snap() to parent (see snapAllToCorner in SessionFlow).
     useImperativeHandle(ref, () => ({
@@ -343,18 +354,21 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
       // moves track the cursor 1:1 (no lag). React restores the inline
       // transition on the next render (after setPosition flips to floating).
       if (node) node.style.transition = "none";
-      // If shifted out of the Settings sheet's way, a drag means the user is
+      // If shifted out of an avoided rect's way, a drag means the user is
       // deliberately repositioning. Bake the transform offset into the stored
-      // `left` (instantly, no animation) and clear the shift, so the widget
-      // stays where the user put it when Settings closes instead of springing
-      // back — which also guards against restoring it off the right edge.
-      if (node && shiftRef.current !== 0) {
+      // left/top (instantly, no animation) and clear the shift, so the widget
+      // stays where the user put it when the rect goes away instead of
+      // springing back — which also guards against restoring it off-screen.
+      if (node && (shiftRef.current.x !== 0 || shiftRef.current.y !== 0)) {
         const baseLeft = parseFloat(node.style.left) || currentLeft();
-        const baked = baseLeft + shiftRef.current;
-        node.style.left = `${baked}px`;
+        const baseTop = parseFloat(node.style.top) || currentTop();
+        const bakedX = baseLeft + shiftRef.current.x;
+        const bakedY = baseTop + shiftRef.current.y;
+        node.style.left = `${bakedX}px`;
+        node.style.top = `${bakedY}px`;
         node.style.transform = "";
-        setPosition({ x: baked, y: currentTop() });
-        applyShift(0);
+        setPosition({ x: bakedX, y: bakedY });
+        applyShift(ZERO_SHIFT);
       }
       // Read current DOM position so the drag starts from wherever the widget
       // actually is (may differ from state.position when snapped/mid-animation).
@@ -524,13 +538,16 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
           // Emitted as a custom property so the width is overridable from CSS
           // without a prop. All geometry that depends on it measures the node.
           width: "var(--fw-widget-width, 17rem)",
-          // X-only minimal shift out of the Settings sheet's way (#270),
-          // computed per-widget in the effect above. Applied as a transform so
-          // the stored left/top are untouched — closing Settings springs back
-          // to the prior position with no re-snap. The transition is the
-          // "spring back"; transform doesn't affect hit-testing, so the widget
-          // stays interactive while shifted.
-          transform: shift ? `translateX(${shift}px)` : undefined,
+          // Minimal shift out of `avoidRects`' way, computed per-widget in the
+          // effect above. Applied as a transform so the stored left/top are
+          // untouched — removing the rect springs back to the prior position
+          // with no re-snap. The transition is the "spring back"; transform
+          // doesn't affect hit-testing, so the widget stays interactive while
+          // shifted.
+          transform:
+            shift.x || shift.y
+              ? `translate(${shift.x}px, ${shift.y}px)`
+              : undefined,
           // Snapped widgets animate `top` so coordinator reflow (a sibling
           // collapsing/expanding, the header banner toggling) glides instead of
           // jumping. Floating widgets only animate the Settings-shift transform;

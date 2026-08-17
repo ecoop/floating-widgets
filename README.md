@@ -239,6 +239,57 @@ the page behind it.
 
 ---
 
+## Staying out of the way — `avoidRects`
+
+Widgets float over the page, so other UI can land underneath them: a side sheet,
+a toast stack, the iOS software keyboard. Hand the stack the regions to keep
+clear and each widget slides by *only* as much as it needs to escape them.
+
+```tsx
+const sheetRef = useRef<HTMLDivElement>(null);
+const avoidRects = useAvoidRects([sheetRef]);   // measured, live
+
+<FloatingWidgetStack avoidRects={avoidRects} … />
+```
+
+`useAvoidRects` measures on every commit and via `ResizeObserver`, so an
+animating sheet is tracked as it opens and an unmounted one simply stops being
+avoided. It's safe with an inline `[ref]` array — no memoization needed.
+
+`AvoidRect` is `{ left, top, right, bottom }` in viewport coordinates, which
+`DOMRect` satisfies structurally, so you can also pass
+`element.getBoundingClientRect()` results or synthesize a rect yourself. For the
+iOS keyboard, `visualViewport` gives you one:
+
+```tsx
+// The strip the keyboard covers: below the visual viewport, above the layout one.
+const vv = window.visualViewport!;
+const keyboard = {
+  left: 0, right: innerWidth,
+  top: vv.height + vv.offsetTop, bottom: innerHeight,
+};
+```
+
+### How it decides which way to move
+
+The smallest displacement that clears each rect, preferring a direction that
+keeps the widget on-screen. Direction falls out of the geometry rather than
+being configured — a full-height side sheet can only be escaped sideways, a
+full-width keyboard only upward. **Snapped widgets move on x only**, because the
+coordinator owns their y: shifting one vertically would slide it into siblings
+that don't know to reflow.
+
+The shift is a CSS transform, so stored positions are untouched and removing the
+rect springs each widget back to exactly where it was. If the user *drags* a
+widget while it's shifted, the offset is baked into its position and it stays
+put — they meant to move it. Ignored entirely while docked.
+
+> Replaces 0.1.0's `settingsOpen` / `settingsPanelWidth`, which said the same
+> thing in one consumer's vocabulary with the rect hardcoded as a width measured
+> from the right edge — a shape that couldn't express a keyboard.
+
+---
+
 ## Styling
 
 Three layers, so you can go as far as you need and no further.
@@ -315,6 +366,7 @@ renders under the home indicator), and the dock's scroll containment.
 | `StackOriginReporter` | Measures `headerRef` bottom → stack origin. Renders nothing. |
 | `FloatingWidgetStack<Ctx>` | Renders the registry in either presentation; exposes the handle via `ref`. |
 | `useDock()` | Reactive `{ presentation, isDock, dockEdge, open, setOpen, toggle }`. How your own chrome reflects and drives the dock. |
+| `useAvoidRects(refs)` | Measures live elements into `AvoidRect[]` for the stack's `avoidRects`. |
 | `WidgetDef<Ctx>` (type) | One widget: `id`, `header`, `render`, optional `mountWhen` / `dockWhen` / `peek` / `defaultCollapsed` / `classNames`. |
 | `FloatingWidgetStackHandle` (type) | `{ snapAll(); resetAll(); openDock(); closeDock(); toggleDock(); isDockOpen(); }`. |
 
@@ -322,10 +374,10 @@ renders under the home indicator), and the dock's scroll containment.
 `"bottom"`), `defaultDockOpen?` (default `false`), `dockOpen?`,
 `onDockOpenChange?`.
 
-**`FloatingWidgetStack` props:** `widgets`, `ctx`, `settingsOpen?`,
-`settingsPanelWidth?`, `storagePrefix?`, `classNames?`, `unstyled?`,
-`dockLabel?`, `renderDockTrigger?`, `dockModal?`, `ref?`. Pass `storagePrefix` if
-two apps share an origin, so their `widget:<id>` localStorage keys don't collide.
+**`FloatingWidgetStack` props:** `widgets`, `ctx`, `avoidRects?`,
+`storagePrefix?`, `classNames?`, `unstyled?`, `dockLabel?`,
+`renderDockTrigger?`, `dockModal?`, `ref?`. Pass `storagePrefix` if two apps
+share an origin, so their `widget:<id>` localStorage keys don't collide.
 
 ### Primitives (escape hatch — custom layouts)
 
@@ -345,6 +397,11 @@ to know:
 - **Markup gained attributes.** Every element now carries `data-fw-part` (plus
   `data-state`, `data-presentation`, `data-mode`). Classes are unchanged. Only
   a test asserting on exact DOM attributes would notice.
+- **`settingsOpen` / `settingsPanelWidth` are replaced by `avoidRects`** — the
+  one genuinely breaking change, and a compile error rather than a silent one.
+  Instead of a boolean plus a hardcoded panel width, pass the region to avoid;
+  `useAvoidRects([sheetRef])` measures it from the live element, so the widths
+  can't drift apart. See [above](#staying-out-of-the-way--avoidrects).
 - **A stored position is no longer rewritten to fit the viewport.** Through
   0.1.0 a resize clamped each floating widget's position *and saved the clamp*,
   so merely opening the page narrow permanently moved a widget: one stored at

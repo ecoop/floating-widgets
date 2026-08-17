@@ -37,6 +37,10 @@ export type {
 // ── Styling seam ─────────────────────────────────────────────────────────────
 export type { PartClassNames, Presentation, WidgetPart } from "./parts";
 
+// ── Staying clear of other UI (sheets, the software keyboard, toasts) ────────
+export { useAvoidRects, avoidOffset, AVOID_GAP } from "./avoid";
+export type { AvoidRect, AvoidAxes, AvoidBox } from "./avoid";
+
 // ── Lower-level primitives (escape hatch — custom layouts) ───────────────────
 export { FloatingWidget } from "./FloatingWidget";
 export type { FloatingWidgetHandle } from "./FloatingWidget";
