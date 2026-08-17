@@ -17,12 +17,32 @@
  *
  * Collapse/expand state is independent of mode and survives a snap — a
  * snapped widget keeps whatever expanded/collapsed state it had, and the
- * coordinator reflows its siblings around its actual height.
+ * coordinator reflows its siblings around its actual height. It is also
+ * independent of PRESENTATION: a widget collapsed on the desktop is collapsed
+ * in the dock, because collapse is the widget's own state rather than a layout
+ * artifact.
  *
  * `mode` subsumes the old dormant `snapAnchor` field (#243 → Phase 3).
+ *
+ * Stored position is INTENT, not placement (0.2.0)
+ * ------------------------------------------------
+ * The stored position is where the user put the widget, and it is written by
+ * exactly one thing: a committed drag. It is deliberately NOT rewritten to fit
+ * the current viewport.
+ *
+ * Through 0.1.0 a resize handler clamped the position *and saved the clamp*, so
+ * merely viewing the page at a narrow width permanently destroyed the desktop
+ * placement: a widget stored at x=900 was rewritten to x≈100 on a phone and
+ * stayed stranded mid-page when the viewport widened again. That made a clean
+ * float↔dock crossing unachievable no matter how the dock itself behaved, since
+ * every crossing passes through the narrow width.
+ *
+ * Clamping now happens where the position is READ (FloatingWidget's
+ * currentLeft/currentTop, via `clampPosition` below), so a narrow viewport
+ * constrains where the widget is drawn without touching what the user chose.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 export type WidgetPosition = { x: number; y: number };
 export type WidgetMode = "snapped" | "floating";
@@ -45,8 +65,10 @@ interface WidgetLayoutHook {
   reset: () => void;
 }
 
-// Widget width matches the `width: "17rem"` in FloatingWidget — used for
-// clamping so the grip stays reachable even when dragged to the right edge.
+// Default widget width, matching the `--fw-widget-width` fallback in
+// FloatingWidget. Used only where the real element hasn't been measured yet;
+// a consumer that overrides the CSS variable is respected because the drag,
+// clamp and snap math read the node's actual offsetWidth.
 export const WIDGET_W = 272; // 17rem at 16px root font size
 // Inset from the right viewport edge for a widget's *default* (right-edge-
 // anchored) position, so it isn't flush against the edge. The old magic 288
@@ -58,9 +80,19 @@ function storageKey(id: string): string {
   return `widget:${id}`;
 }
 
-function clampPosition(pos: WidgetPosition): WidgetPosition {
+/**
+ * Constrain a position to the current viewport. Called at READ time (never
+ * before a save) so a narrow viewport can't overwrite the user's placement —
+ * see the header note. `width` should be the widget's measured offsetWidth;
+ * WIDGET_W is only the pre-measurement fallback.
+ */
+export function clampPosition(
+  pos: WidgetPosition,
+  width: number = WIDGET_W,
+): WidgetPosition {
+  if (typeof window === "undefined") return pos;
   return {
-    x: Math.max(0, Math.min(pos.x, window.innerWidth  - WIDGET_W)),
+    x: Math.max(0, Math.min(pos.x, window.innerWidth  - width)),
     y: Math.max(0, Math.min(pos.y, window.innerHeight - HEADER_H)),
   };
 }
@@ -94,7 +126,9 @@ function loadState(
         // becomes the floating fallback if the user later drags the widget).
         const mode: WidgetMode = parsed.mode === "floating" ? "floating" : "snapped";
         return {
-          position: clampPosition(parsed.position),
+          // Loaded unclamped — the stored value is the user's intent, and the
+          // viewport at load time is not necessarily the one they chose it in.
+          position: parsed.position,
           collapsed: parsed.collapsed ?? defaultCollapsed,
           mode,
         };
@@ -124,26 +158,6 @@ export function useWidgetLayout(
   const [state, setState] = useState<WidgetState>(() =>
     loadState(id, defaultPosition, defaultCollapsed, defaultMode),
   );
-
-  // Re-clamp whenever the viewport shrinks so floating widgets don't get
-  // stranded off-screen. Snapped widgets are positioned by the coordinator
-  // (which already tracks the viewport), so this is floating-only.
-  useEffect(() => {
-    function onResize() {
-      setState((prev) => {
-        if (prev.mode !== "floating") return prev;
-        const clamped = clampPosition(prev.position);
-        if (clamped.x === prev.position.x && clamped.y === prev.position.y) {
-          return prev; // no change — skip re-render + save
-        }
-        const next = { ...prev, position: clamped };
-        saveState(id, next);
-        return next;
-      });
-    }
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [id]);
 
   function update(patch: Partial<WidgetState>): void {
     const next = { ...state, ...patch };

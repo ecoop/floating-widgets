@@ -1,12 +1,25 @@
 // Copyright (c) 2026 Eric Cooper. Licensed under the MIT License; see LICENSE.
 /**
- * FloatingWidget — a draggable panel that is either "snapped" (placed by the
- * LayoutContext coordinator) or "floating" (user-owned absolute position).
- * (#156, coordinator #257.)
+ * FloatingWidget — one widget's chrome, in either of two presentations.
  *
- * Always renders via React Portal (document.body), always position: fixed.
- * Drag is implemented with pointer events + setPointerCapture — no external
- * library, React 19 compatible, zero re-renders during a drag gesture.
+ * FLOAT (the 0.1.0 behavior, unchanged): a draggable panel that is either
+ * "snapped" (placed by the LayoutContext coordinator) or "floating" (user-owned
+ * absolute position). Renders via React Portal (document.body), position:fixed.
+ * Drag is pointer events + setPointerCapture — no external library, React 19
+ * compatible, zero re-renders during a drag gesture. (#156, coordinator #257.)
+ *
+ * DOCK (0.2.0): the same widget as one row of the docked accordion. Renders
+ * INLINE — the stack owns the single portal in this presentation — with no
+ * grip, no drag, no coordinator registration and no position writes. Only
+ * collapse state is live, and it is the same collapse state as float, read
+ * from the same localStorage entry.
+ *
+ * Switching presentation remounts this component (its parent in the element
+ * tree changes). That is accepted rather than worked around: every persistent
+ * concern — collapsed, mode, position — lives in localStorage and is re-read on
+ * mount, and the only transient state is a drag in progress and the z-order,
+ * both meaningless in the dock. Preserving the instance would mean a mutable
+ * portal target and an extra render for no user-visible benefit.
  *
  * Snapped vs floating
  * -------------------
@@ -15,7 +28,10 @@
  *                above). The widget registers its `order` and reports its
  *                measured height (ResizeObserver) so siblings reflow when it
  *                collapses/expands. The stored position is ignored.
- *   - floating → `left`/`top` come from the persisted `state.position`.
+ *   - floating → `left`/`top` come from the persisted `state.position`, clamped
+ *                to the viewport AT READ TIME (see useWidgetLayout's header:
+ *                the stored value is the user's intent and is never rewritten
+ *                to fit a narrower window).
  * Dragging the grip flips the widget to floating (the user takes ownership);
  * the parent's SnapTo flips every widget back to snapped via the ref handle.
  *
@@ -24,12 +40,19 @@
  *
  * The header content and chevron both toggle collapse on click. The grip
  * is exclusively a drag affordance (pointer events only, no click action).
+ * The chevron is the *accessible* control — it carries aria-expanded and
+ * aria-controls. The header content stays a plain click target rather than a
+ * <button>, deliberately: it holds arbitrary consumer markup from
+ * `WidgetDef.header`, and wrapping that in a button would nest interactive
+ * elements for any consumer whose summary line contains one.
+ *
+ * Sizing: the width is emitted as `--fw-widget-width` (default 17rem) so it is
+ * overridable from CSS. Every geometry computation that depends on it — the
+ * right-edge anchor, the drag clamp, the snap-zone test — measures the node's
+ * offsetWidth rather than assuming WIDGET_W, so an override stays consistent.
  *
  * Bring-to-front: any mousedown increments a module-level z-counter and
  * updates the node's style.zIndex directly — no setState, no re-render.
- *
- * Drag clamping: pointer move and pointer up clamp to the viewport using the
- * widget's actual offsetWidth so the grip is always reachable.
  *
  * Position, collapsed state, and mode persist to localStorage via
  * useWidgetLayout.
@@ -41,6 +64,7 @@
 import {
   forwardRef,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useReducer,
@@ -50,8 +74,11 @@ import {
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
 
-import { useLayout } from "./LayoutContext";
+import { avoidOffset, type AvoidRect } from "./avoid";
+import { useDock, useLayout } from "./LayoutContext";
+import { partProps, type PartClassNames, type PartStyling } from "./parts";
 import {
+  clampPosition,
   useWidgetLayout,
   WIDGET_W,
   WIDGET_MARGIN,
@@ -63,9 +90,12 @@ let zTop = 50;
 
 /** Default X for a right-edge-anchored widget at the *current* viewport width.
  *  Read at call time (not frozen at mount) so the snapped anchor and the
- *  mount default both track window resizes — widening lands on the true edge. */
-function rightEdgeX(): number {
-  return Math.max(0, window.innerWidth - WIDGET_W - WIDGET_MARGIN);
+ *  mount default both track window resizes — widening lands on the true edge.
+ *  Takes the measured width so a `--fw-widget-width` override still anchors
+ *  flush to the edge. */
+function rightEdgeX(width: number): number {
+  if (typeof window === "undefined") return 0;
+  return Math.max(0, window.innerWidth - width - WIDGET_MARGIN);
 }
 
 /** Pointer travel (px) separating a click from the start of a drag — sub-slop
@@ -111,20 +141,23 @@ type FloatingWidgetProps = {
    *  Snapped widgets ignore this (the coordinator derives top). Default 64. */
   defaultFloatY?: number;
   /**
-   * Whether the Settings sheet is open (#270). When true the widget slides
-   * left by *only* as much as needed to clear the panel (see settingsPanelWidth);
-   * a widget already clear of the panel doesn't move. The shift is a CSS
-   * transform (x-only), so the stored left/top are untouched and closing the
-   * sheet springs the widget back to exactly where it was — unless the user
-   * dragged it while shifted, in which case it stays put. Default false.
+   * Regions to keep clear — a side sheet, the software keyboard, a toast
+   * stack. The widget slides by *only* as much as needed to escape them; one
+   * already clear doesn't move. The shift is a CSS transform, so the stored
+   * left/top are untouched and removing the rect springs the widget back to
+   * exactly where it was — unless the user dragged it while shifted, in which
+   * case it stays put.
+   *
+   * Snapped widgets move on x only (the coordinator owns their y). Float
+   * presentation only: a docked widget has nothing to get out of the way of.
    */
-  settingsOpen?: boolean;
-  /**
-   * Width (px) of the Settings sheet, used to compute the panel's left edge
-   * (innerWidth − settingsPanelWidth) and hence each widget's minimal shift.
-   * Default 448 (28rem, shadcn `sm:max-w-md`).
-   */
-  settingsPanelWidth?: number;
+  avoidRects?: readonly AvoidRect[];
+  /** Stack-level class overrides, keyed by `data-fw-part`. */
+  classNames?: PartClassNames;
+  /** Per-widget class overrides, applied after the stack-level ones. */
+  widgetClassNames?: PartClassNames;
+  /** Drop all default classes; keep structure, data attributes and geometry. */
+  unstyled?: boolean;
 };
 
 export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetProps>(
@@ -135,12 +168,14 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     children,
     defaultCollapsed = false,
     defaultFloatY = 64,
-    settingsOpen = false,
-    settingsPanelWidth = 448,
+    avoidRects,
+    classNames,
+    widgetClassNames,
+    unstyled,
   }, ref) {
     // Default position computed once on mount — right edge of viewport.
     const defaultPos = useRef<WidgetPosition>({
-      x: rightEdgeX(),
+      x: rightEdgeX(WIDGET_W),
       y: defaultFloatY,
     });
 
@@ -153,11 +188,13 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     // The coordinator — derives `top` for snapped widgets and reflows them
     // around each other's measured heights.
     const { registerSnapped, unregisterSnapped, setHeight, topFor } = useLayout();
+    const { isDock } = useDock();
 
     const snapped = state.mode === "snapped";
 
     const nodeRef  = useRef<HTMLDivElement>(null);
     const zRef     = useRef(++zTop);
+    const bodyId   = useId();
     const dragStart = useRef<{
       mouseX: number; mouseY: number;
       startX: number; startY: number;
@@ -167,12 +204,26 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     // Separates a click (press + release in place) from a real drag.
     const dragMoved = useRef(false);
 
+    const styling: PartStyling = {
+      presentation: isDock ? "dock" : "float",
+      classNames,
+      widgetClassNames,
+      unstyled,
+    };
+
+    /** The node's real width, or the default before it has been measured. */
+    function measuredWidth(): number {
+      return nodeRef.current?.offsetWidth || WIDGET_W;
+    }
+
     // ── Coordinator registration + height reporting ──────────────────────────
-    // While snapped: register this slot and feed the coordinator our measured
-    // outer height so siblings reflow when we collapse/expand. While floating
-    // (or on unmount): unregister so the stack gap closes.
+    // While snapped AND floating-presentation: register this slot and feed the
+    // coordinator our measured outer height so siblings reflow when we
+    // collapse/expand. While floating, docked, or on unmount: unregister so the
+    // stack gap closes. Docked widgets are laid out by the dock, so they must
+    // stay out of the coordinator entirely.
     useLayoutEffect(() => {
-      if (!snapped) {
+      if (isDock || !snapped) {
         unregisterSnapped(id);
         return;
       }
@@ -186,57 +237,90 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
         ro.disconnect();
         unregisterSnapped(id);
       };
-    }, [snapped, id, order, registerSnapped, unregisterSnapped, setHeight]);
+    }, [isDock, snapped, id, order, registerSnapped, unregisterSnapped, setHeight]);
 
-    // Snapped widgets track the right edge on window resize. (Floating widgets
-    // are re-clamped by useWidgetLayout; this just re-reads rightEdgeX/topFor.)
+    // Re-read derived geometry on resize. Snapped widgets re-anchor to the
+    // right edge; floating widgets re-run the read-time clamp (which replaced
+    // 0.1.0's clamp-and-save, so the resize no longer destroys their stored
+    // position). Both presentations listen — the dock ignores the result.
     const [, forceTick] = useReducer((n: number) => n + 1, 0);
     useEffect(() => {
-      if (!snapped) return;
       const onResize = () => forceTick();
       window.addEventListener("resize", onResize);
       return () => window.removeEventListener("resize", onResize);
-    }, [snapped]);
+    }, []);
 
-    // ── Settings-aware minimal X-shift (#270) ────────────────────────────────
-    // When the Settings sheet opens, slide this widget left by *only* as much
-    // as needed to clear the panel — a widget already left of the panel edge
-    // computes 0 and doesn't move. The shift is a CSS transform (x-only), so
-    // stored left/top are untouched and closing the sheet springs the widget
-    // back. `shiftRef` mirrors the state for the pointer handlers (which close
-    // over stale state otherwise).
-    const [shift, setShift] = useState(0);
-    const shiftRef = useRef(0);
-    function applyShift(v: number) {
+    // One tick after mount so the first paint's WIDGET_W assumption is replaced
+    // by the node's real width — otherwise a consumer that overrides
+    // --fw-widget-width would anchor off the right edge until something else
+    // re-rendered.
+    useLayoutEffect(() => {
+      forceTick();
+    }, []);
+
+    // ── Minimal shift out of the way of `avoidRects` (was #270) ──────────────
+    // Slide this widget by *only* as much as needed to escape the rects — one
+    // already clear computes {0,0} and doesn't move. The shift is a CSS
+    // transform, so stored left/top are untouched and removing the rect springs
+    // the widget back. `shiftRef` mirrors the state for the pointer handlers
+    // (which close over stale state otherwise).
+    const ZERO_SHIFT = { x: 0, y: 0 };
+    const [shift, setShift] = useState<{ x: number; y: number }>(ZERO_SHIFT);
+    const shiftRef = useRef<{ x: number; y: number }>(ZERO_SHIFT);
+    function applyShift(v: { x: number; y: number }) {
+      // Bail when unchanged: the effect below runs on every avoidRects change,
+      // and an unconditional setState there would re-render → re-run → loop.
+      if (shiftRef.current.x === v.x && shiftRef.current.y === v.y) return;
       shiftRef.current = v;
       setShift(v);
     }
     // The widget's current rendered left — derived (right edge) when snapped,
-    // stored position when floating. Used as the shift baseline and drag start.
+    // stored-and-clamped position when floating. Used as the shift baseline and
+    // the drag start.
     function currentLeft(): number {
-      return snapped ? rightEdgeX() : state.position.x;
+      const w = measuredWidth();
+      return snapped ? rightEdgeX(w) : clampPosition(state.position, w).x;
     }
     function currentTop(): number {
-      return snapped ? topFor(id) : state.position.y;
+      return snapped ? topFor(id) : clampPosition(state.position, measuredWidth()).y;
     }
+    // Depend on the rects' VALUES, not the array's identity. A consumer passing
+    // an inline `[{...}]` would otherwise give this effect a new dep every
+    // render; combined with the setState it does, that is an infinite loop.
+    // Serializing makes the hook correct regardless of caller memoization.
+    const avoidKey = (avoidRects ?? [])
+      .map((r) => `${r.left},${r.top},${r.right},${r.bottom}`)
+      .join("|");
+
     useEffect(() => {
-      if (settingsOpen) {
-        const el = nodeRef.current;
-        const w = el?.offsetWidth ?? 272;
-        const left = el ? parseFloat(el.style.left) || currentLeft() : currentLeft();
-        const panelLeft = window.innerWidth - settingsPanelWidth;
-        const gap = 16;
-        const overlap = left + w + gap - panelLeft;
-        applyShift(overlap > 0 ? -overlap : 0);
-      } else {
-        // Spring back to 0 — a no-op if a mid-open drag already committed
-        // (onGripPointerDown bakes the shift into `left` and clears it).
-        applyShift(0);
+      // A docked widget has nothing to dodge and no inline position to shift.
+      if (isDock || !avoidRects || avoidRects.length === 0) {
+        // Spring back — a no-op if a mid-shift drag already committed
+        // (onGripPointerDown bakes the shift into left/top and clears it).
+        applyShift(ZERO_SHIFT);
+        return;
       }
-      // Recompute only on open/close (or panel resize); a drag while open
-      // commits via onGripPointerDown rather than re-running this effect.
+      const el = nodeRef.current;
+      const width = el?.offsetWidth || WIDGET_W;
+      const height = el?.offsetHeight || 0;
+      // Read from the DOM where available so the baseline is where the widget
+      // actually is, not where a mid-animation state says it should be.
+      const left = el ? parseFloat(el.style.left) || currentLeft() : currentLeft();
+      const top = el ? parseFloat(el.style.top) || currentTop() : currentTop();
+      applyShift(
+        avoidOffset(
+          { left, top, width, height },
+          avoidRects,
+          // The coordinator owns y for snapped widgets — moving one vertically
+          // would slide it into siblings that don't know to reflow.
+          snapped ? "x" : "xy",
+          { width: window.innerWidth, height: window.innerHeight },
+        ),
+      );
+      // A drag while shifted commits via onGripPointerDown rather than by
+      // re-running this effect.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [settingsOpen, settingsPanelWidth]);
+    }, [avoidKey, isDock, snapped]);
 
     // Expose reset() + snap() to parent (see snapAllToCorner in SessionFlow).
     useImperativeHandle(ref, () => ({
@@ -253,7 +337,7 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
     // Returns x,y clamped so the widget stays within the viewport.
     // Reads actual offsetWidth from the DOM so the clamp is exact.
     function clampDrag(x: number, y: number): { x: number; y: number } {
-      const w = nodeRef.current?.offsetWidth ?? 272;
+      const w = measuredWidth();
       return {
         x: Math.max(0, Math.min(x, window.innerWidth  - w)),
         y: Math.max(0, Math.min(y, window.innerHeight - 40)),
@@ -270,18 +354,21 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
       // moves track the cursor 1:1 (no lag). React restores the inline
       // transition on the next render (after setPosition flips to floating).
       if (node) node.style.transition = "none";
-      // If shifted out of the Settings sheet's way, a drag means the user is
+      // If shifted out of an avoided rect's way, a drag means the user is
       // deliberately repositioning. Bake the transform offset into the stored
-      // `left` (instantly, no animation) and clear the shift, so the widget
-      // stays where the user put it when Settings closes instead of springing
-      // back — which also guards against restoring it off the right edge.
-      if (node && shiftRef.current !== 0) {
+      // left/top (instantly, no animation) and clear the shift, so the widget
+      // stays where the user put it when the rect goes away instead of
+      // springing back — which also guards against restoring it off-screen.
+      if (node && (shiftRef.current.x !== 0 || shiftRef.current.y !== 0)) {
         const baseLeft = parseFloat(node.style.left) || currentLeft();
-        const baked = baseLeft + shiftRef.current;
-        node.style.left = `${baked}px`;
+        const baseTop = parseFloat(node.style.top) || currentTop();
+        const bakedX = baseLeft + shiftRef.current.x;
+        const bakedY = baseTop + shiftRef.current.y;
+        node.style.left = `${bakedX}px`;
+        node.style.top = `${bakedY}px`;
         node.style.transform = "";
-        setPosition({ x: baked, y: currentTop() });
-        applyShift(0);
+        setPosition({ x: bakedX, y: bakedY });
+        applyShift(ZERO_SHIFT);
       }
       // Read current DOM position so the drag starts from wherever the widget
       // actually is (may differ from state.position when snapped/mid-animation).
@@ -335,7 +422,7 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
         start.startY + (e.clientY - start.mouseY),
       );
 
-      const nearDock = Math.abs(x - rightEdgeX()) <= SNAP_ZONE;
+      const nearDock = Math.abs(x - rightEdgeX(measuredWidth())) <= SNAP_ZONE;
 
       // ── Snapped widget: detach only if it cleared its own footprint AND
       //    wasn't dropped back near the dock ─────────────────────────────────
@@ -370,57 +457,35 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
 
     const isCollapsed = state.collapsed;
 
-    return createPortal(
-      <div
-        ref={nodeRef}
-        style={{
-          position: "fixed",
-          left: currentLeft(),
-          top: currentTop(),
-          zIndex: zRef.current,
-          width: "17rem",
-          // X-only minimal shift out of the Settings sheet's way (#270),
-          // computed per-widget in the effect above. Applied as a transform so
-          // the stored left/top are untouched — closing Settings springs back
-          // to the prior position with no re-snap. The transition is the
-          // "spring back"; transform doesn't affect hit-testing, so the widget
-          // stays interactive while shifted.
-          transform: shift ? `translateX(${shift}px)` : undefined,
-          // Snapped widgets animate `top` so coordinator reflow (a sibling
-          // collapsing/expanding, the header banner toggling) glides instead of
-          // jumping. Floating widgets only animate the Settings-shift transform;
-          // their drag mutates `top` directly with the transition killed.
-          transition: snapped ? SNAPPED_TRANSITION : FLOATING_TRANSITION,
-        }}
-        onMouseDown={bringToFront}
-      >
-        <div className="rounded-lg border bg-card text-card-foreground shadow-lg overflow-hidden">
+    /* ── Shared chrome ──────────────────────────────────────────────────────
+       The header row and body are identical in both presentations; only the
+       grip and the wrapper differ. `grip` is passed in rather than branched on
+       inside, so the float path keeps its exact 0.1.0 markup. */
+    function chrome(grip: React.ReactNode) {
+      return (
+        <div {...partProps("card", styling)}>
 
           {/* ── Header ──────────────────────────────────────────────────── */}
-          <div className="flex items-center select-none">
+          <div {...partProps("header", styling)}>
 
-            {/* Grip — drag affordance only, no click action */}
-            <span
-              className="flex items-center px-2 py-2 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground touch-none"
-              onPointerDown={onGripPointerDown}
-              onPointerMove={onGripPointerMove}
-              onPointerUp={onGripPointerUp}
-            >
-              <GripVertical className="h-4 w-4" />
-            </span>
+            {grip}
 
-            {/* Header content — click anywhere here to expand / collapse */}
+            {/* Header content — click anywhere here to expand / collapse.
+                A plain click target, not a <button>: it holds arbitrary
+                consumer markup and must not nest interactive elements. */}
             <div
-              className="min-w-0 flex-1 overflow-hidden py-1.5 cursor-pointer"
+              {...partProps("title", styling)}
               onClick={() => setCollapsed(!isCollapsed)}
             >
               {header}
             </div>
 
-            {/* Chevron — secondary collapse toggle */}
+            {/* Chevron — the accessible expand/collapse control */}
             <button
               type="button"
-              className="shrink-0 px-2 py-1.5 text-foreground/70 hover:text-foreground"
+              {...partProps("toggle", styling)}
+              aria-expanded={!isCollapsed}
+              aria-controls={isCollapsed ? undefined : bodyId}
               title={isCollapsed ? "Expand" : "Collapse"}
               onClick={() => setCollapsed(!isCollapsed)}
             >
@@ -432,12 +497,86 @@ export const FloatingWidget = forwardRef<FloatingWidgetHandle, FloatingWidgetPro
 
           {/* ── Body ────────────────────────────────────────────────────── */}
           {!isCollapsed && (
-            <div className="border-t">
+            <div id={bodyId} {...partProps("body", styling)}>
               {children}
             </div>
           )}
 
         </div>
+      );
+    }
+
+    // ── Dock presentation: inline, no portal, no drag, no positioning ────────
+    if (isDock) {
+      return (
+        <div
+          ref={nodeRef}
+          {...partProps("root", styling)}
+          data-fw-id={id}
+          data-presentation="dock"
+          data-state={isCollapsed ? "collapsed" : "expanded"}
+        >
+          {chrome(null)}
+        </div>
+      );
+    }
+
+    // ── Float presentation ───────────────────────────────────────────────────
+    return createPortal(
+      <div
+        ref={nodeRef}
+        {...partProps("root", styling)}
+        data-fw-id={id}
+        data-presentation="float"
+        data-mode={snapped ? "snapped" : "floating"}
+        data-state={isCollapsed ? "collapsed" : "expanded"}
+        style={{
+          position: "fixed",
+          left: currentLeft(),
+          top: currentTop(),
+          zIndex: zRef.current,
+          // Emitted as a custom property so the width is overridable from CSS
+          // without a prop. All geometry that depends on it measures the node.
+          width: "var(--fw-widget-width, 17rem)",
+          // Minimal shift out of `avoidRects`' way, computed per-widget in the
+          // effect above. Applied as a transform so the stored left/top are
+          // untouched — removing the rect springs back to the prior position
+          // with no re-snap. The transition is the "spring back"; transform
+          // doesn't affect hit-testing, so the widget stays interactive while
+          // shifted.
+          transform:
+            shift.x || shift.y
+              ? `translate(${shift.x}px, ${shift.y}px)`
+              : undefined,
+          // Snapped widgets animate `top` so coordinator reflow (a sibling
+          // collapsing/expanding, the header banner toggling) glides instead of
+          // jumping. Floating widgets only animate the Settings-shift transform;
+          // their drag mutates `top` directly with the transition killed.
+          transition: snapped ? SNAPPED_TRANSITION : FLOATING_TRANSITION,
+        }}
+        // Pointer, not mouse: a touch on a widget must raise it too, or on a
+        // touch device the z-order can only ever be changed by dragging.
+        onPointerDown={bringToFront}
+      >
+        {chrome(
+          /* Grip — drag affordance only, no click action */
+          <span
+            {...partProps("grip", styling)}
+            style={{
+              // Drag correctness, so inline rather than in the default class:
+              // without touch-action:none a touch drag scrolls the page instead
+              // of moving the widget, and `unstyled` would otherwise silently
+              // remove the only thing making drag work on a phone or iPad.
+              touchAction: "none",
+              userSelect: "none",
+            }}
+            onPointerDown={onGripPointerDown}
+            onPointerMove={onGripPointerMove}
+            onPointerUp={onGripPointerUp}
+          >
+            <GripVertical className="h-4 w-4" />
+          </span>,
+        )}
       </div>,
       document.body,
     );
