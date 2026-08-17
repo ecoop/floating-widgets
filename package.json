@@ -1,7 +1,7 @@
 {
   "name": "@nobadeer/floating-widgets",
-  "version": "0.1.0",
-  "description": "Draggable, snappable corner-docked panel stack (\"floating widgets\") for React 19 + shadcn/Tailwind.",
+  "version": "0.2.0",
+  "description": "Draggable, snappable corner-docked panel stack (\"floating widgets\") for React 19, with a responsive docked mode for narrow viewports.",
   "license": "MIT",
   "author": "Eric Cooper <eric@cooper.nu>",
   "type": "module",
