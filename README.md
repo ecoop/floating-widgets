@@ -246,15 +246,47 @@ a toast stack, the iOS software keyboard. Hand the stack the regions to keep
 clear and each widget slides by *only* as much as it needs to escape them.
 
 ```tsx
-const sheetRef = useRef<HTMLDivElement>(null);
-const avoidRects = useAvoidRects([sheetRef]);   // measured, live
+const [sheetRects, sheetRef] = useAvoidElement();
 
-<FloatingWidgetStack avoidRects={avoidRects} … />
+<SheetContent ref={sheetRef}>…</SheetContent>
+<FloatingWidgetStack avoidRects={sheetRects} … />
 ```
 
-`useAvoidRects` measures on every commit and via `ResizeObserver`, so an
-animating sheet is tracked as it opens and an unmounted one simply stops being
-avoided. It's safe with an inline `[ref]` array — no memoization needed.
+`useAvoidElement` hands you a **callback ref**, which is what makes it correct
+for content you don't mount yourself — Radix / shadcn `Sheet`, `Dialog`,
+`Popover`, `DropdownMenu`, anything `Presence`-wrapped or mounted from its own
+effect. React invokes a callback ref when it *attaches* the element, however
+many commits later that happens, so there is no window where the element exists
+and the hook hasn't seen it.
+
+It re-measures on attach, the next animation frame, `ResizeObserver`,
+`animationend`, `transitionend`, and window resize. The animation events earn
+their place: a sheet that slides in via `transform` changes its box without
+changing its size, so `ResizeObserver` alone would leave the rect at the
+off-screen position the animation started from.
+
+It returns an array (empty or one rect) so several regions compose by spreading,
+with nothing to memoize:
+
+```tsx
+const [sheetRects, sheetRef] = useAvoidElement();
+const [toastRects, toastRef] = useAvoidElement();
+
+<FloatingWidgetStack avoidRects={[...sheetRects, ...toastRects]} … />
+```
+
+> **`useAvoidRects([ref])` is deprecated and only works for DOM you render
+> inline.** A `RefObject` cannot notify — `ref.current` is mutated invisibly to
+> React — so its only re-measure trigger is a commit of the calling component.
+> A Radix portal mounts via state inside a descendant, which never re-renders
+> the host, so the hook measures once against `null` and nothing tells it to
+> look again. Use it only for a panel you mount yourself, or to measure several
+> host-owned elements through one hook.
+
+Not tracked by either hook: an avoided element that moves with **scroll** (in
+normal flow rather than fixed/absolute). Watching that costs a
+`getBoundingClientRect` per scroll frame, which isn't worth the layout cost for
+a HUD — build the rect yourself and pass it to `avoidRects` directly.
 
 `AvoidRect` is `{ left, top, right, bottom }` in viewport coordinates, which
 `DOMRect` satisfies structurally, so you can also pass
@@ -366,7 +398,8 @@ renders under the home indicator), and the dock's scroll containment.
 | `StackOriginReporter` | Measures `headerRef` bottom → stack origin. Renders nothing. |
 | `FloatingWidgetStack<Ctx>` | Renders the registry in either presentation; exposes the handle via `ref`. |
 | `useDock()` | Reactive `{ presentation, isDock, dockEdge, open, setOpen, toggle }`. How your own chrome reflects and drives the dock. |
-| `useAvoidRects(refs)` | Measures live elements into `AvoidRect[]` for the stack's `avoidRects`. |
+| `useAvoidElement()` | `[rects, callbackRef]`. Tracks one element, correct for portaled/animated content. |
+| `useAvoidRects(refs)` | **Deprecated.** RefObject-based; only sees DOM mounted in the same commit as the caller. |
 | `WidgetDef<Ctx>` (type) | One widget: `id`, `header`, `render`, optional `mountWhen` / `dockWhen` / `peek` / `defaultCollapsed` / `classNames`. |
 | `FloatingWidgetStackHandle` (type) | `{ snapAll(); resetAll(); openDock(); closeDock(); toggleDock(); isDockOpen(); }`. |
 
@@ -403,9 +436,16 @@ else looks and behaves as before.
 **`settingsOpen` / `settingsPanelWidth` → `avoidRects`**, on both
 `FloatingWidgetStack` and `FloatingWidget`. A compile error, so TypeScript finds
 every call site for you. Instead of a boolean plus a hardcoded panel width, pass
-the region to avoid — `useAvoidRects([sheetRef])` measures it from the live
-element, so the avoided region can't drift away from the real panel. See
+the region to avoid — `useAvoidElement()` measures it from the live element, so
+the avoided region can't drift away from the real panel. See
 [above](#staying-out-of-the-way--avoidrects) for both migration forms.
+
+### 0.2.0 → 0.2.1
+
+`useAvoidElement` was added and `useAvoidRects` deprecated. If you shipped
+against 0.2.0 with `useAvoidRects` and a portaled sheet, **the hook was inert** —
+it returned `[]` and your widgets never moved. Switch to `useAvoidElement`; the
+change is one line at the call site and one at the element.
 
 ### Silent changes — the ones actually worth reading
 
