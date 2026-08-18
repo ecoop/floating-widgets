@@ -35,8 +35,10 @@
  */
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
+  useRef,
   useState,
   type RefObject,
 } from "react";
@@ -151,6 +153,13 @@ export function avoidOffset(
   return { x: dx, y: dy };
 }
 
+/** One element's viewport box, or null if it isn't laid out (hidden/detached). */
+function rectOf(el: Element): AvoidRect | null {
+  const b = el.getBoundingClientRect();
+  if (b.width === 0 && b.height === 0) return null;
+  return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+}
+
 function sameRects(a: readonly AvoidRect[], b: readonly AvoidRect[]): boolean {
   if (a.length !== b.length) return false;
   return a.every(
@@ -163,16 +172,25 @@ function sameRects(a: readonly AvoidRect[], b: readonly AvoidRect[]): boolean {
 }
 
 /**
- * Measure live elements as `AvoidRect`s — the ergonomic path for "keep out of
- * this sheet's way", replacing a hardcoded width with the element's real box.
- * Absent (null) refs contribute nothing, so a sheet that isn't mounted simply
- * stops being avoided.
+ * Measure live elements as `AvoidRect`s, for DOM the host renders itself.
  *
- * Measures after EVERY commit, the same approach StackOriginReporter uses and
- * for the same reason: the host re-renders precisely when the things that move
- * these elements change. The equality check means it cannot loop, and it also
- * makes the hook safe with an inline `[ref]` array — no memoization required of
- * the caller.
+ * ONLY use this when the avoided element is mounted in the same commit as the
+ * component calling this hook — a sidebar or panel you render inline. For
+ * anything portaled, animated, or mounted from its own effect, use
+ * `useAvoidElement` instead.
+ *
+ * Why the limit is structural, not a bug to patch: a `RefObject` cannot notify.
+ * `ref.current` is mutated invisibly to React, so the only re-measure trigger
+ * available here is a commit of the CALLING component. When a Radix portal
+ * mounts it does so via state inside a descendant (`Portal` renders null until
+ * its own layout effect sets `mounted`), which never re-renders the host — so
+ * this hook measures once against `ref.current === null`, and nothing ever
+ * tells it to look again. `useAvoidElement` takes a callback ref, which React
+ * invokes whenever it attaches the element, however late that is.
+ *
+ * @deprecated Prefer `useAvoidElement`, which is correct for portaled and
+ * animated content as well as inline DOM. Retained for host-owned DOM and for
+ * measuring several elements through one hook.
  */
 export function useAvoidRects(
   refs: ReadonlyArray<RefObject<HTMLElement | null>>,
@@ -214,4 +232,91 @@ export function useAvoidRects(
   }, [refs.length]);
 
   return rects;
+}
+
+/**
+ * Track one element as an `AvoidRect`, via a callback ref.
+ *
+ * The correct primitive for anything you do not mount yourself: Radix / shadcn
+ * `Sheet`, `Dialog`, `Popover` and `DropdownMenu` portals, `Presence`-wrapped
+ * animated content, or any component that mounts from its own effect. React
+ * invokes a callback ref when it *attaches* the element — whenever that
+ * happens, in the same commit or many commits later — so there is no window in
+ * which the element exists and this hook hasn't seen it.
+ *
+ *   const [sheetRects, sheetRef] = useAvoidElement();
+ *   <SheetContent ref={sheetRef}>…</SheetContent>
+ *   <FloatingWidgetStack avoidRects={sheetRects} … />
+ *
+ * Returns an ARRAY (empty or one rect) so several avoided regions compose by
+ * spreading, without the caller memoizing anything:
+ *
+ *   const [sheetRects, sheetRef] = useAvoidElement();
+ *   const [toastRects, toastRef] = useAvoidElement();
+ *   <FloatingWidgetStack avoidRects={[...sheetRects, ...toastRects]} … />
+ *
+ * Re-measures on: attach, the next animation frame, `ResizeObserver`,
+ * `animationend`, `transitionend`, and window resize. The animation events
+ * matter as much as the observer — a sheet that slides in with a transform
+ * changes its box without changing its size, so `ResizeObserver` alone would
+ * leave the rect at the off-screen position the animation started from.
+ *
+ * Not tracked: an avoided element that MOVES with scroll (i.e. is in normal
+ * flow rather than fixed/absolute). Watching that means a
+ * `getBoundingClientRect` per scroll frame, which is not worth the layout cost
+ * for a HUD. Avoided regions are overlays in practice; if yours scrolls, build
+ * the rect yourself and pass it to `avoidRects` directly.
+ */
+export function useAvoidElement(): [
+  AvoidRect[],
+  (el: HTMLElement | null) => void,
+] {
+  const [rects, setRects] = useState<AvoidRect[]>([]);
+  // Teardown for whatever element is currently attached. Held in a ref because
+  // the callback ref must be able to detach the PREVIOUS element without its
+  // own identity changing (a changing ref identity would make React detach and
+  // re-attach on every render).
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  const commit = useCallback((el: HTMLElement | null) => {
+    const rect = el ? rectOf(el) : null;
+    const next = rect ? [rect] : [];
+    setRects((prev) => (sameRects(prev, next) ? prev : next));
+  }, []);
+
+  const ref = useCallback(
+    (el: HTMLElement | null) => {
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+
+      if (!el) {
+        commit(null); // detached — stop avoiding it
+        return;
+      }
+
+      commit(el);
+
+      const remeasure = () => commit(el);
+      const ro = new ResizeObserver(remeasure);
+      ro.observe(el);
+      el.addEventListener("animationend", remeasure);
+      el.addEventListener("transitionend", remeasure);
+      window.addEventListener("resize", remeasure);
+      // One frame later, for a final position applied after attach.
+      const raf = requestAnimationFrame(remeasure);
+
+      cleanupRef.current = () => {
+        cancelAnimationFrame(raf);
+        ro.disconnect();
+        el.removeEventListener("animationend", remeasure);
+        el.removeEventListener("transitionend", remeasure);
+        window.removeEventListener("resize", remeasure);
+      };
+    },
+    [commit],
+  );
+
+  useEffect(() => () => cleanupRef.current?.(), []);
+
+  return [rects, ref];
 }
