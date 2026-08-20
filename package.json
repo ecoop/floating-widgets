@@ -1,6 +1,6 @@
 {
   "name": "@nobadeer/floating-widgets",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Draggable, snappable corner-docked panel stack (\"floating widgets\") for React 19, with a responsive docked mode for narrow viewports.",
   "license": "MIT",
   "author": "Eric Cooper <eric@cooper.nu>",
@@ -21,20 +21,26 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build",
+    "test": "vitest run"
   },
   "peerDependencies": {
+    "lucide-react": ">=0.400.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "lucide-react": ">=0.400.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "jsdom": "^29.1.1",
     "lucide-react": "^0.400.0",
+    "radix-ui": "^1.6.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.11"
   }
 }
