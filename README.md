@@ -2,7 +2,7 @@
 
 # @nobadeer/floating-widgets
 
-_Last updated: 2026-08-17_
+_Last updated: 2026-08-18_
 
 A draggable, snappable stack of corner-docked panels — **"floating widgets"** —
 for React 19, which presents as a single docked surface on narrow viewports.
@@ -440,6 +440,13 @@ the region to avoid — `useAvoidElement()` measures it from the live element, s
 the avoided region can't drift away from the real panel. See
 [above](#staying-out-of-the-way--avoidrects) for both migration forms.
 
+### 0.2.1 → 0.2.2
+
+Bug fix only. `useAvoidElement` crashed with **"Maximum update depth exceeded"**
+when its callback ref was attached to a Radix-composed component (shadcn
+`Sheet`, `Dialog`, `Popover`) — React unmounted the whole subtree. If you tried
+`useAvoidElement` on 0.2.1 and backed it out, 0.2.2 is the one to retry.
+
 ### 0.2.0 → 0.2.1
 
 `useAvoidElement` was added and `useAvoidRects` deprecated. If you shipped
@@ -505,7 +512,13 @@ entirely.
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit, mirrors Pitchcraft's strictness
+npm test            # vitest — regression tests for the useAvoid* hooks
 npm run build       # tsup → dist/index.js (ESM) + dist/index.d.ts
 ```
+
+All three run in CI on every PR, and `prepublishOnly` runs them again before a
+publish. The test suite exists because two consecutive releases shipped broken
+`useAvoid*` hooks: `test/avoid.test.tsx` covers both the portal-mount timing
+and the callback-ref churn that caused them.
 
 Licensed under the MIT License; see `LICENSE`.

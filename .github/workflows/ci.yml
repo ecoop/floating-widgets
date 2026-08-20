@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Eric Cooper. Licensed under the MIT License; see LICENSE.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Same three gates as prepublishOnly, so a green PR means the package
+      # would publish cleanly. Two shipped bugs in the useAvoid* hooks got
+      # through because none of this ran anywhere.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

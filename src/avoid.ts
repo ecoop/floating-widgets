@@ -272,11 +272,13 @@ export function useAvoidElement(): [
   (el: HTMLElement | null) => void,
 ] {
   const [rects, setRects] = useState<AvoidRect[]>([]);
-  // Teardown for whatever element is currently attached. Held in a ref because
-  // the callback ref must be able to detach the PREVIOUS element without its
-  // own identity changing (a changing ref identity would make React detach and
-  // re-attach on every render).
+  // The element currently being observed, and the teardown for its listeners.
+  const attachedRef = useRef<HTMLElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  // Bumped on every attach and every detach request; a deferred detach only
+  // runs if its generation is still current. This is what cancels a detach
+  // that a re-attach has already superseded.
+  const detachGenRef = useRef(0);
 
   const commit = useCallback((el: HTMLElement | null) => {
     const rect = el ? rectOf(el) : null;
@@ -286,14 +288,48 @@ export function useAvoidElement(): [
 
   const ref = useCallback(
     (el: HTMLElement | null) => {
-      cleanupRef.current?.();
-      cleanupRef.current = null;
-
-      if (!el) {
-        commit(null); // detached — stop avoiding it
+      if (el === null) {
+        // DEFERRED detach — the subtle part, and the cause of a real crash.
+        //
+        // When a composed ref's identity changes, React calls the OLD callback
+        // with null and the NEW one with the SAME element, both inside one
+        // commit. Radix's `useComposedRefs` produces a fresh identity on benign
+        // re-renders, so this pair fires constantly for a Radix `Content`.
+        //
+        // Clearing state synchronously here makes the pair flip [] then
+        // [{rect}] within that commit. The net value is unchanged but the array
+        // is a NEW identity, so React re-renders, so Radix composes a new ref,
+        // so the pair fires again: "Maximum update depth exceeded", and React
+        // unmounts the subtree.
+        //
+        // Deferring one microtask lets the re-attach land first. If it does,
+        // this detach is cancelled and NOTHING happens — no teardown, no
+        // setState, no re-render, so the cycle never starts. A real unmount has
+        // no re-attach, so the detach runs normally, one microtask late.
+        //
+        // Note an element-identity check alone (`if (el === last) return`) does
+        // NOT fix this: null !== el and el !== null, so both calls still pass.
+        const gen = ++detachGenRef.current;
+        queueMicrotask(() => {
+          if (detachGenRef.current !== gen) return; // superseded by a re-attach
+          cleanupRef.current?.();
+          cleanupRef.current = null;
+          attachedRef.current = null;
+          commit(null);
+        });
         return;
       }
 
+      // Any attach cancels a pending detach.
+      detachGenRef.current++;
+
+      // Re-attaching the element we are already observing: the listeners are
+      // live and the rect is current, so there is nothing to do. Returning here
+      // also keeps us from churning a ResizeObserver on every Radix re-render.
+      if (el === attachedRef.current) return;
+
+      cleanupRef.current?.();
+      attachedRef.current = el;
       commit(el);
 
       const remeasure = () => commit(el);
@@ -316,7 +352,16 @@ export function useAvoidElement(): [
     [commit],
   );
 
-  useEffect(() => () => cleanupRef.current?.(), []);
+  useEffect(
+    () => () => {
+      // Cancel any deferred detach so it can't fire after unmount.
+      detachGenRef.current++;
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+      attachedRef.current = null;
+    },
+    [],
+  );
 
   return [rects, ref];
 }
