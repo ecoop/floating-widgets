@@ -43,11 +43,12 @@ own — a coordinator derives its `top` from the stack origin plus the measured
 heights of the widgets above it. Reflow when one collapses or expands falls out
 for free instead of being bookkeeping somebody has to maintain.
 
-**Float vs. dock is global chrome state, not per-widget state.** While docked,
-widgets never register with the coordinator and never write a position, so
-crossing the breakpoint is lossless *by construction* rather than by
-reconciliation — there is no code path that could strand a widget or leave a
-stale position behind.
+**Float vs. dock is global chrome state, not per-widget state.** While docked, a
+widget never registers with the coordinator and nothing can change its stored
+position — only a committed drag writes one, and there is no dragging in the
+dock. So crossing the breakpoint is lossless *by construction* rather than by
+reconciliation, with no code path that could strand a widget or leave a stale
+position behind.
 
 **A stored position is intent, not placement.** Clamping to the viewport happens
 where the position is read, never before a save. The earlier design clamped and
@@ -58,20 +59,24 @@ desktop layout.
 element, a `classNames` bag, and `unstyled` let a consumer restyle all of it.
 But `touch-action`, `env(safe-area-inset-*)` and scroll containment are applied
 inline, out of `unstyled`'s reach — because if removing it breaks behavior, it
-was never skin. That test is what caught three things that would have broken
-touch drag the moment a non-shadcn consumer opted out of the defaults.
+was never skin. That test caught three: the grip's `touch-action` (without it a
+touch drag scrolls the page instead of moving the widget), the dock's safe-area
+padding (a bottom sheet renders under the iPhone home indicator), and its scroll
+containment — each of which `unstyled` would otherwise have deleted.
 
 **Escape direction is derived, not configured.** `avoidRects` computes the
-minimum-translation escape from each region, preferring one that keeps the
-widget on-screen. A full-height side sheet can only be escaped sideways and a
-full-width keyboard only upward, so both fall out of the same rule with no
-per-case configuration.
+smallest displacement that clears each region, considering only directions that
+keep the widget on-screen. A full-height side sheet can therefore only be
+escaped sideways and a full-width keyboard only upward — both fall out of one
+rule with no per-case configuration. When no on-screen escape exists the widget
+stays put, because shoving it past the viewport edge would make it unreachable
+without helping.
 
 ---
 
 ## Runtime contract
 
-Two things this package **cannot** enforce through `package.json` or types. Get
+Three things this package **cannot** enforce through `package.json` or types. Get
 them wrong and it fails quietly (unstyled panels, or widgets that don't track
 the header), so they're stated up front.
 

@@ -18,11 +18,12 @@
  * Minimum-translation escape
  * --------------------------
  * For each overlapping rect we take the smallest displacement that clears it,
- * preferring a direction that keeps the widget on-screen. Direction falls out of
- * the geometry rather than being configured: a full-height side sheet can only
- * be escaped horizontally (a vertical escape would have to leave the viewport),
- * and a full-width keyboard only vertically. So the original Settings behavior
- * is reproduced by the general rule rather than special-cased inside it.
+ * considering ONLY directions that keep the widget on-screen; when none does,
+ * the widget stays put. Direction falls out of the geometry rather than being
+ * configured: a full-height side sheet can only be escaped horizontally (a
+ * vertical escape would have to leave the viewport), and a full-width keyboard
+ * only vertically. So the original Settings behavior is reproduced by the
+ * general rule rather than special-cased inside it.
  *
  * Axis restriction
  * ----------------
