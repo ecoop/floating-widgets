@@ -184,9 +184,9 @@ function AppShell() {
   // Stable — the registry never closes over live state directly.
   const widgets = useMemo(() => WIDGETS, []);
 
+  // dockBelow: below this width the stack presents as one docked surface.
+  // Omit it for always-floating (the 0.1.0 behavior).
   return (
-    {/* dockBelow: below this width the stack presents as one docked surface.
-        Omit it for always-floating (the 0.1.0 behavior). */}
     <LayoutProvider dockBelow={1024}>
       <StackOriginReporter headerRef={headerRef} />
       <header ref={headerRef}>{/* your app header / banners */}</header>
@@ -223,7 +223,7 @@ here.)
 Pass `dockBelow` and the stack switches presentation on its own:
 
 ```tsx
-<LayoutProvider dockBelow={1024}>
+<LayoutProvider dockBelow={1024}>…</LayoutProvider>
 ```
 
 Below that width every widget leaves the page and joins one docked surface — an
