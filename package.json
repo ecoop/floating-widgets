@@ -3,6 +3,27 @@
   "version": "0.2.2",
   "description": "Draggable, snappable corner-docked panel stack (\"floating widgets\") for React 19, with a responsive docked mode for narrow viewports.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ecoop/floating-widgets.git"
+  },
+  "homepage": "https://github.com/ecoop/floating-widgets#readme",
+  "bugs": {
+    "url": "https://github.com/ecoop/floating-widgets/issues"
+  },
+  "keywords": [
+    "react",
+    "react-19",
+    "typescript",
+    "floating-panel",
+    "draggable",
+    "hud",
+    "widgets",
+    "responsive",
+    "dock",
+    "bottom-sheet",
+    "shadcn"
+  ],
   "author": "Eric Cooper <eric@cooper.nu>",
   "type": "module",
   "sideEffects": false,
