@@ -6,11 +6,13 @@
 [![CI](https://github.com/ecoop/floating-widgets/actions/workflows/ci.yml/badge.svg)](https://github.com/ecoop/floating-widgets/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/npm/l/@nobadeer/floating-widgets)](https://github.com/ecoop/floating-widgets/blob/main/LICENSE)
 
-_Last updated: 2026-09-08_
+**Draggable, snappable panels for React 19 that collapse into a docked sheet
+when there's no room beside your content.**
 
-A draggable, snappable stack of corner-docked panels — **"floating widgets"** —
-for React 19, which presents as a single docked surface on narrow viewports.
-Extracted from Pitchcraft's sidebar HUD (Usage / Diagnostics / Telemetry / Demo).
+A widget is a small collapsible card — a usage meter, a diagnostics readout —
+that floats over your app rather than living in the layout. On a wide screen
+they stack in the margin and the user can drag them anywhere. On a phone there
+is no margin, so the whole stack becomes one sheet pinned to the bottom edge.
 
 Each widget is either **snapped** (placed by a shared coordinator that stacks
 widgets below your header and reflows them as they collapse/expand) or
@@ -500,3 +502,5 @@ publish. The test suite exists because two consecutive releases shipped broken
 and the callback-ref churn that caused them.
 
 Licensed under the MIT License; see `LICENSE`.
+
+_Last updated: 2026-09-08_
