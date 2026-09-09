@@ -2,7 +2,11 @@
 
 # @nobadeer/floating-widgets
 
-_Last updated: 2026-08-18_
+[![npm](https://img.shields.io/npm/v/@nobadeer/floating-widgets)](https://www.npmjs.com/package/@nobadeer/floating-widgets)
+[![CI](https://github.com/ecoop/floating-widgets/actions/workflows/ci.yml/badge.svg)](https://github.com/ecoop/floating-widgets/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/npm/l/@nobadeer/floating-widgets)](https://github.com/ecoop/floating-widgets/blob/main/LICENSE)
+
+_Last updated: 2026-09-08_
 
 A draggable, snappable stack of corner-docked panels — **"floating widgets"** —
 for React 19, which presents as a single docked surface on narrow viewports.
@@ -21,6 +25,45 @@ surface pinned to an edge, holding every widget as an accordion. See
 
 The package ships the **mechanism** — chrome, coordinator, persistence — and is
 agnostic about what goes *in* the panels. You supply the panel contents.
+
+```bash
+npm install @nobadeer/floating-widgets
+```
+
+---
+
+## Design notes
+
+The five decisions that shape everything else.
+
+**Positions are derived, not stored.** A snapped widget has no position of its
+own — a coordinator derives its `top` from the stack origin plus the measured
+heights of the widgets above it. Reflow when one collapses or expands falls out
+for free instead of being bookkeeping somebody has to maintain.
+
+**Float vs. dock is global chrome state, not per-widget state.** While docked,
+widgets never register with the coordinator and never write a position, so
+crossing the breakpoint is lossless *by construction* rather than by
+reconciliation — there is no code path that could strand a widget or leave a
+stale position behind.
+
+**A stored position is intent, not placement.** Clamping to the viewport happens
+where the position is read, never before a save. The earlier design clamped and
+saved on resize, which meant opening the page on a phone permanently destroyed a
+desktop layout.
+
+**The styling seam separates skin from correctness.** `data-fw-part` on every
+element, a `classNames` bag, and `unstyled` let a consumer restyle all of it.
+But `touch-action`, `env(safe-area-inset-*)` and scroll containment are applied
+inline, out of `unstyled`'s reach — because if removing it breaks behavior, it
+was never skin. That test is what caught three things that would have broken
+touch drag the moment a non-shadcn consumer opted out of the defaults.
+
+**Escape direction is derived, not configured.** `avoidRects` computes the
+minimum-translation escape from each region, preferring one that keeps the
+widget on-screen. A full-height side sheet can only be escaped sideways and a
+full-width keyboard only upward, so both fall out of the same rule with no
+per-case configuration.
 
 ---
 
@@ -422,79 +465,14 @@ only if you're building a layout other than the stack.
 
 ---
 
-## Upgrading from 0.1.0
+## Versioning
 
-Narrower than the version bump suggests. **No export was removed** — 0.2.0 is
-purely additive at the module level — and the **localStorage format is
-unchanged** (same `widget:<id>` key, same `{ position, collapsed, mode }`
-shape), so saved layouts survive untouched. `dockBelow` defaults to `false` and
-the default class strings are the 0.1.0 ones, so an upgrade that changes nothing
-else looks and behaves as before.
+Full release history, including every breaking change and the silent behavior
+changes worth knowing about, is in [CHANGELOG.md](https://github.com/ecoop/floating-widgets/blob/main/CHANGELOG.md).
 
-### The one breaking change
-
-**`settingsOpen` / `settingsPanelWidth` → `avoidRects`**, on both
-`FloatingWidgetStack` and `FloatingWidget`. A compile error, so TypeScript finds
-every call site for you. Instead of a boolean plus a hardcoded panel width, pass
-the region to avoid — `useAvoidElement()` measures it from the live element, so
-the avoided region can't drift away from the real panel. See
-[above](#staying-out-of-the-way--avoidrects) for both migration forms.
-
-### 0.2.1 → 0.2.2
-
-Bug fix only. `useAvoidElement` crashed with **"Maximum update depth exceeded"**
-when its callback ref was attached to a Radix-composed component (shadcn
-`Sheet`, `Dialog`, `Popover`) — React unmounted the whole subtree. If you tried
-`useAvoidElement` on 0.2.1 and backed it out, 0.2.2 is the one to retry.
-
-### 0.2.0 → 0.2.1
-
-`useAvoidElement` was added and `useAvoidRects` deprecated. If you shipped
-against 0.2.0 with `useAvoidRects` and a portaled sheet, **the hook was inert** —
-it returned `[]` and your widgets never moved. Switch to `useAvoidElement`; the
-change is one line at the call site and one at the element.
-
-### Silent changes — the ones actually worth reading
-
-None of these will fail to compile, so they're the ones that cost debugging time
-if you hit them without knowing.
-
-- **The grip's `touch-none` class is gone**, replaced by inline
-  `touch-action: none` (plus `user-select: none`). They are drag correctness
-  rather than skin, and had to move somewhere `unstyled` can't delete them. If
-  any of your CSS or tests select the grip by that class name, they now miss.
-- **Bring-to-front moved from `onMouseDown` to `onPointerDown`**, so a touch can
-  raise a widget without dragging it. A test that fires `mouseDown` to assert
-  z-order will silently stop exercising anything — switch it to `pointerDown`.
-- **A floating widget may now escape a rect vertically.** 0.1.0's Settings shift
-  was x-only for every widget; `avoidRects` is x-only for *snapped* widgets (the
-  coordinator owns their y) but both axes for floating ones. For a full-height
-  sheet the result is identical, since a vertical escape would have to leave the
-  viewport. If your sheet is *not* full height, a floating widget that used to
-  slide sideways may now slide up.
-- **The chevron gained `aria-expanded` / `aria-controls`**, and the body gained
-  an `id` to match. Additive, but it changes the accessibility tree — update any
-  a11y assertions that enumerated it.
-- **Markup gained attributes.** Every element now carries `data-fw-part`, plus
-  `data-state`, `data-presentation`, `data-mode` and `data-fw-id`. Classes are
-  unchanged. Expect churn in DOM snapshot tests.
-- **A stored position is no longer rewritten to fit the viewport.** Through
-  0.1.0 a resize clamped each floating widget's position *and saved the clamp*,
-  so merely opening the page narrow permanently moved a widget: one stored at
-  x=900 became x≈100 and stayed stranded when the window widened again.
-  Clamping now happens where the position is read, so the stored value stays the
-  user's intent and the widget is still drawn on-screen. If you were relying on
-  the old behavior to rescue off-screen widgets, `resetAll()` is the deliberate
-  version of that.
-
-### Version pinning
-
-`0.2.0` rather than `0.1.1` is deliberate. Under semver's 0.x rules a caret
-range allows patch bumps only — `^0.1.0` means `>=0.1.0 <0.2.0` — so a
-caret-pinned consumer will **not** cross this break on a reinstall, and can stay
-on 0.1.0 as long as it likes. Only `>=`, `*` or `latest` ranges would drift.
-Consuming the package by `file:` path, workspace link or git ref bypasses this
-entirely.
+Semver's 0.x rules do useful work here: a caret range allows patch bumps only,
+so `^0.2.0` means `>=0.2.0 <0.3.0` and a caret-pinned consumer never crosses a
+minor break by reinstalling.
 
 ---
 
